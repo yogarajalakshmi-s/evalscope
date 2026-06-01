@@ -170,3 +170,7 @@ examples/api_test/
 node_modules/
 evalscope/web/dist/
 evalscope/web/.vite/
+pruned_aa_lcr.json
+pruned_*.json
+results_full/
+results_pruned/
