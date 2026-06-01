@@ -84,83 +84,64 @@ def compute_difficulty(
 def discriminativeness(difficulty: float) -> float:
     """
     Score how discriminative a sample is.
-    Peaks at difficulty=0.5 (models disagree most).
-    Uses a tent function: 1 - |2*d - 1|
+    Uses a softened tent function with a floor so all tiers get representation.
+    Floor at 0.3 ensures easy/hard samples still get some representation.
     """
-    return 1.0 - abs(2.0 * difficulty - 1.0)
+    tent = 1.0 - abs(2.0 * difficulty - 1.0)
+    return 0.3 + 0.7 * tent  # floor at 0.3
 
 
 def stratified_sample(
     difficulty: Dict[int, float],
     prune_ratio: float,
-    n_tiers: int = 10,
+    n_tiers: int = 5,
     random_seed: int = 42,
 ) -> List[int]:
     """
-    Stratify samples by difficulty and sample proportionally from each tier,
-    weighting by discriminativeness so medium-difficulty samples are preferred.
-
-    Args:
-        difficulty: mapping from sample index to difficulty score
-        prune_ratio: fraction of samples to KEEP (e.g. 0.3 = keep 30%)
-        n_tiers: number of difficulty buckets
-        random_seed: for reproducibility
-
-    Returns:
-        sorted list of selected sample indices
+    Select samples that maximize rank separation signal.
+    
+    Key insight: with binary scores, the most informative samples are
+    those where exactly one model fails (mean=0.33 or mean=0.67).
+    These directly separate model capabilities.
     """
     import random
-    random.seed(random_seed)
+    rng = random.Random(random_seed)
 
     total = len(difficulty)
     target_n = max(1, math.ceil(total * prune_ratio))
 
-    # Assign each sample to a tier
-    tiers: Dict[int, List[Tuple[int, float]]] = defaultdict(list)
-    for idx, diff in difficulty.items():
-        tier = min(n_tiers - 1, int(diff * n_tiers))
-        disc = discriminativeness(diff)
-        tiers[tier].append((idx, disc))
+    # Categorize by discriminativeness
+    all_fail = [idx for idx, d in difficulty.items() if d == 0.0]
+    hard = [idx for idx, d in difficulty.items() if 0.0 < d <= 0.4]
+    medium = [idx for idx, d in difficulty.items() if 0.4 < d <= 0.6]  
+    easy = [idx for idx, d in difficulty.items() if 0.6 < d < 1.0]
+    all_pass = [idx for idx, d in difficulty.items() if d == 1.0]
 
-    # Compute tier weights based on mean discriminativeness
-    tier_weights: Dict[int, float] = {}
-    for tier, samples in tiers.items():
-        tier_weights[tier] = sum(d for _, d in samples) / len(samples)
-
-    total_weight = sum(tier_weights.values())
-
-    # Allocate quota per tier proportional to discriminativeness weight
-    selected: List[int] = []
-    remaining_quota = target_n
-
-    tier_list = sorted(tiers.keys())
-    for i, tier in enumerate(tier_list):
-        samples = tiers[tier]
-        is_last = i == len(tier_list) - 1
-
-        if is_last:
-            quota = remaining_quota
-        else:
-            weight = tier_weights[tier] / total_weight if total_weight > 0 else 1.0 / n_tiers
-            quota = max(1, round(target_n * weight))
-            quota = min(quota, len(samples), remaining_quota)
-
-        # Within tier, weight by discriminativeness for sampling
-        indices = [idx for idx, _ in samples]
-        weights = [d for _, d in samples]
-
-        # Weighted sampling without replacement
-        k = min(quota, len(indices))
-        if k > 0:
-            chosen = weighted_sample_without_replacement(indices, weights, k, random_seed + tier)
-            selected.extend(chosen)
-            remaining_quota -= len(chosen)
-
-        if remaining_quota <= 0:
-            break
+    # Priority: medium > easy > hard > all_pass > all_fail
+    # Medium and easy/hard are where models disagree — highest signal
+    # all_pass and all_fail give no ranking signal
+    
+    selected = []
+    
+    # Take ALL disagreement samples first (they carry the ranking signal)
+    disagreement = hard + medium + easy
+    rng.shuffle(disagreement)
+    take_disagreement = min(len(disagreement), target_n)
+    selected.extend(disagreement[:take_disagreement])
+    
+    # Fill remaining with all_pass (better than all_fail for score calibration)
+    remaining = target_n - len(selected)
+    if remaining > 0:
+        rng.shuffle(all_pass)
+        selected.extend(all_pass[:remaining])
+    
+    # Fill any remaining with all_fail
+    remaining = target_n - len(selected)
+    if remaining > 0:
+        rng.shuffle(all_fail)
+        selected.extend(all_fail[:remaining])
 
     return sorted(selected)
-
 
 def weighted_sample_without_replacement(
     indices: List[int],
