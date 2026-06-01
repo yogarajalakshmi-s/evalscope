@@ -386,3 +386,36 @@ If you use EvalScope in your research, please cite our work:
 ## ⭐ Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=modelscope/evalscope&type=Date)](https://star-history.com/#modelscope/evalscope&Date)
+
+---
+
+## Cerebras Challenge - Benchmark Compression Extension
+
+Added as part of the Cerebras AI Engineer Model Quality challenge.
+
+**Evalscope commit SHA pinned:** `e9d42d8b6a8dcb937e042ba905e36eb05171ae0d`
+
+Extension location: `evalscope/benchmarks/cerebras_pruner/`
+
+See [cerebras_pruner/README.md](evalscope/benchmarks/cerebras_pruner/README.md) for full documentation, [HANDOUT_A.md](evalscope/benchmarks/cerebras_pruner/HANDOUT_A.md) for technical writeup and [HANDOUT_B.md](evalscope/benchmarks/cerebras_pruner/HANDOUT_B.md) for non-technical writeup.
+
+### Quick Start
+
+```bash
+pip install -e .
+python -c "
+from evalscope.benchmarks.cerebras_pruner.pruner import prune_benchmark
+prune_benchmark(
+    review_dir='path/to/Evals/Part 1/reviews',
+    benchmark='aa_lcr',
+    prune_ratio=0.3,
+)
+"
+```
+
+### Results
+
+| Benchmark | Full | Pruned | Reduction | Spearman |
+|---|---|---|---|---|
+| AA-LCR | 100 | 30 | 70% | 1.0 ✅ |
+| LiveCodeBench v5 | 315 | 95 | 70% | 1.0 ✅ |
