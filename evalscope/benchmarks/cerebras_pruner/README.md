@@ -57,6 +57,26 @@ python -m evalscope_ext.tools.compare_runs \
 | AA-LCR | 100 | 30 | 70% | 1.0 |
 | LiveCodeBench v5 | 315 | 95 | 70% | 1.0 |
 
+## MMMU Encoder Stress Probe (Part B)
+
+| Benchmark | Full Samples | Probe Samples | Reduction | Avg Encoder Stress Uplift |
+|---|---|---|---|---|
+| MMMU | 660 | 99 | 85% | +0.200 |
+
+Run the MMMU probe:
+
+```bash
+python -c "
+from evalscope.benchmarks.cerebras_pruner.mmmu_pruner import prune_mmmu
+prune_mmmu(
+    pred_dir='path/to/Evals/MMMU/predictions/glm-4.5v-fp8',
+    review_dir='path/to/Evals/MMMU/reviews/glm-4.5v-fp8',
+    prune_ratio=0.15,
+    output_path='./pruned_mmmu.json'
+)
+"
+```
+
 ## Strategy
 
 **Key insight:** With binary scores (0 or 1), samples where models disagree (difficulty ≈ 0.33 or 0.67) carry ALL the ranking signal. Samples where all models pass or all models fail contribute nothing to model differentiation.
@@ -87,6 +107,7 @@ evalscope/benchmarks/cerebras_pruner/
 ├── __init__.py
 ├── pruner.py           # Core algorithm
 ├── adapter.py          # Evalscope adapters
+├── mmmu_pruner.py      # MMMU encoder stress probe
 ├── README.md           # This file
 ├── HANDOUT_A.md        # Technical writeup
 ├── HANDOUT_B.md        # Non-technical writeup
