@@ -7,7 +7,7 @@ Discriminative stratified sampling pruner for benchmark compression. Implemented
 ## Live Task 1 URL
 https://cerebras-perflens.vercel.app/
 
-**Task 2 Demo**: https://www.loom.com/share/11b6683a3f3541ae905a50285e464baa
+**Task 2 Demo**: [https://www.loom.com/share/97d7b20c28ca41ffbe2294c13b96a599](https://www.loom.com/share/97d7b20c28ca41ffbe2294c13b96a599)
 
 ## Quick Start
 
