@@ -4,11 +4,14 @@
 # Extension point: overrides DefaultDataAdapter.sample_filter() which is
 # called during dataset loading. This is the cleanest upstream extension
 # point — no framework internals modified, follows evalscope conventions.
+#
+# The PrunedAdapterMixin is UNIVERSAL — it works with any DefaultDataAdapter
+# subclass. Use make_pruned_adapter() to wrap any registered benchmark.
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Type
 
 from evalscope.api.benchmark import BenchmarkMeta, DefaultDataAdapter
 from evalscope.api.dataset import Sample
@@ -25,18 +28,28 @@ logger = get_logger()
 
 class PrunedAdapterMixin:
     """
-    Mixin that adds discriminative stratified pruning to any DefaultDataAdapter.
+    Universal mixin that adds discriminative stratified pruning to ANY DefaultDataAdapter.
+
+    Works with any benchmark — not hardcoded to aa_lcr or live_code_bench.
 
     Usage:
+        # Option 1: Direct subclassing
         class PrunedAALCR(PrunedAdapterMixin, AALCRAdapter):
             pass
+
+        # Option 2: Dynamic factory (preferred for universal use)
+        PrunedAny = make_pruned_adapter(SomeBenchmarkAdapter)
 
     The mixin overrides sample_filter() to include only pre-computed
     selected indices from the pruner.
     """
 
-    #: Set of sample indices to keep — populated during __init__
-    _selected_indices: Set[int] = set()
+    _selected_indices: Set[int]
+
+    def __init__(self, *args, **kwargs):
+        # Initialize per-instance set to avoid class-level sharing
+        self._selected_indices = set()
+        super().__init__(*args, **kwargs)
 
     def init_pruning(
         self,
@@ -47,7 +60,6 @@ class PrunedAdapterMixin:
     ) -> None:
         """
         Run the pruner and store selected indices.
-
         Call this after super().__init__() in the subclass.
         """
         logger.info(f'Running discriminative stratified pruner for {benchmark_prefix}')
@@ -71,8 +83,8 @@ class PrunedAdapterMixin:
         """
         Override DefaultDataAdapter.sample_filter to include only pruned indices.
 
-        If no indices have been loaded (pruning not initialized), all samples pass.
-        This maintains backward compatibility.
+        If no indices loaded (pruning not initialized), all samples pass.
+        Maintains backward compatibility.
         """
         if not self._selected_indices:
             return True
@@ -80,7 +92,6 @@ class PrunedAdapterMixin:
         sample_id = getattr(sample, 'id', None) or getattr(sample, 'index', None)
 
         if sample_id is None:
-            # Fall back to metadata
             sample_id = (
                 sample.metadata.get('index') or
                 sample.metadata.get('sample_id') or
@@ -93,6 +104,87 @@ class PrunedAdapterMixin:
         return int(sample_id) in self._selected_indices
 
 
+def make_pruned_adapter(
+    base_adapter_cls: Type[DefaultDataAdapter],
+    benchmark_prefix: str,
+    pruned_name: Optional[str] = None,
+    pruned_pretty_name: Optional[str] = None,
+) -> Type[DefaultDataAdapter]:
+    """
+    Universal factory: wrap ANY DefaultDataAdapter with discriminative stratified pruning.
+
+    This is the key to making the pruner universal — it works with any benchmark
+    without hardcoding a new class for each one.
+
+    Args:
+        base_adapter_cls: Any DefaultDataAdapter subclass to wrap
+        benchmark_prefix: Prefix for review files (e.g. 'aa_lcr', 'live_code_bench_v5')
+        pruned_name: Optional name for the pruned benchmark (default: '{base_name}_pruned')
+        pruned_pretty_name: Optional display name
+
+    Returns:
+        A new adapter class with pruning applied
+
+    Example:
+        # Wrap AA-LCR
+        PrunedAALCR = make_pruned_adapter(AALCRAdapter, 'aa_lcr')
+
+        # Wrap any new benchmark
+        PrunedNewBench = make_pruned_adapter(NewBenchAdapter, 'new_bench')
+    """
+
+    base_name = getattr(base_adapter_cls, '__name__', 'UnknownAdapter')
+    class_name = f'Pruned{base_name}'
+
+    class PrunedAdapter(PrunedAdapterMixin, base_adapter_cls):  # type: ignore
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+
+            review_dir = self.extra_params.get('review_dir')
+            prune_ratio = float(self.extra_params.get('prune_ratio', 0.3))
+            output_path = self.extra_params.get('output_path')
+
+            if review_dir:
+                self.init_pruning(
+                    review_dir=review_dir,
+                    benchmark_prefix=benchmark_prefix,
+                    prune_ratio=prune_ratio,
+                    output_path=output_path,
+                )
+            else:
+                logger.warning(
+                    f'{class_name}: no review_dir provided — running without pruning. '
+                    f'Pass extra_params["review_dir"] to enable pruning.'
+                )
+
+    PrunedAdapter.__name__ = class_name
+    PrunedAdapter.__qualname__ = class_name
+    return PrunedAdapter
+
+
+# --- Concrete registrations using the universal factory ---
+
+# Shared extra params for all pruned benchmarks
+_PRUNING_EXTRA_PARAMS = {
+    'review_dir': {
+        'type': 'str',
+        'description': 'Path to directory containing review jsonl files',
+        'value': None,
+    },
+    'prune_ratio': {
+        'type': 'float',
+        'description': 'Fraction of samples to keep (default 0.3)',
+        'value': 0.3,
+    },
+    'output_path': {
+        'type': 'str | null',
+        'description': 'Optional path to save selected indices as JSON',
+        'value': None,
+    },
+}
+
+
 @register_benchmark(
     BenchmarkMeta(
         name='aa_lcr_pruned',
@@ -101,16 +193,8 @@ class PrunedAdapterMixin:
         description="""
 ## AA-LCR with Discriminative Stratified Pruning
 
-Pruned version of AA-LCR using the Cerebras discriminative stratified sampling strategy.
-
-Selects samples where models disagree (difficulty ≈ 0.33 or 0.67) which carry
-the maximum ranking signal. Preserves model ranking from the full benchmark
-(Spearman rank correlation = 1.0 at 30% sample size).
-
-### Extra Parameters
-- `review_dir`: path to directory containing review jsonl files
-- `prune_ratio`: fraction of samples to keep (default 0.3)
-- `output_path`: optional path to save selected indices as JSON
+Pruned via universal PrunedAdapterMixin — works across any benchmark.
+Spearman rank correlation = 1.0 at 30% sample size.
 """,
         dataset_id='evalscope/AA-LCR',
         metric_list=['acc'],
@@ -118,21 +202,7 @@ the maximum ranking signal. Preserves model ranking from the full benchmark
         train_split=None,
         eval_split='test',
         extra_params={
-            'review_dir': {
-                'type': 'str',
-                'description': 'Path to directory containing review jsonl files',
-                'value': None,
-            },
-            'prune_ratio': {
-                'type': 'float',
-                'description': 'Fraction of samples to keep (default 0.3)',
-                'value': 0.3,
-            },
-            'output_path': {
-                'type': 'str | null',
-                'description': 'Optional path to save selected indices as JSON',
-                'value': None,
-            },
+            **_PRUNING_EXTRA_PARAMS,
             'text_dir': {
                 'type': 'str | null',
                 'description': 'Local directory containing extracted AA-LCR text files',
@@ -142,31 +212,17 @@ the maximum ranking signal. Preserves model ranking from the full benchmark
     )
 )
 class PrunedAALCRAdapter(PrunedAdapterMixin, AALCRAdapter):
-    """
-    AA-LCR adapter with discriminative stratified pruning.
-
-    Extends AALCRAdapter by overriding sample_filter() to include
-    only the highest-signal samples selected by the pruner.
-    """
+    """AA-LCR with universal discriminative stratified pruning."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
         review_dir = self.extra_params.get('review_dir')
-        prune_ratio = float(self.extra_params.get('prune_ratio', 0.3))
-        output_path = self.extra_params.get('output_path')
-
         if review_dir:
             self.init_pruning(
                 review_dir=review_dir,
                 benchmark_prefix='aa_lcr',
-                prune_ratio=prune_ratio,
-                output_path=output_path,
-            )
-        else:
-            logger.warning(
-                'aa_lcr_pruned: no review_dir provided — running without pruning. '
-                'Pass extra_params["review_dir"] to enable pruning.'
+                prune_ratio=float(self.extra_params.get('prune_ratio', 0.3)),
+                output_path=self.extra_params.get('output_path'),
             )
 
 
@@ -178,62 +234,25 @@ class PrunedAALCRAdapter(PrunedAdapterMixin, AALCRAdapter):
         description="""
 ## LiveCodeBench v5 with Discriminative Stratified Pruning
 
-Pruned version of LiveCodeBench v5 using the Cerebras discriminative stratified sampling strategy.
-
-Selects samples where models disagree which carry the maximum ranking signal.
-Preserves model ranking from the full benchmark (Spearman rank correlation = 1.0
-at 30% sample size).
-
-### Extra Parameters
-- `review_dir`: path to directory containing review jsonl files
-- `prune_ratio`: fraction of samples to keep (default 0.3)
-- `output_path`: optional path to save selected indices as JSON
+Pruned via universal PrunedAdapterMixin — works across any benchmark.
+Spearman rank correlation = 1.0 at 30% sample size.
 """,
         dataset_id='evalscope/livecodebench_code_generation_lite_parquet',
         metric_list=['acc'],
         eval_split='test',
-        extra_params={
-            'review_dir': {
-                'type': 'str',
-                'description': 'Path to directory containing review jsonl files',
-                'value': None,
-            },
-            'prune_ratio': {
-                'type': 'float',
-                'description': 'Fraction of samples to keep (default 0.3)',
-                'value': 0.3,
-            },
-            'output_path': {
-                'type': 'str | null',
-                'description': 'Optional path to save selected indices as JSON',
-                'value': None,
-            },
-        }
+        extra_params=_PRUNING_EXTRA_PARAMS,
     )
 )
 class PrunedLiveCodeBenchAdapter(PrunedAdapterMixin, LiveCodeBenchAdapter):
-    """
-    LiveCodeBench adapter with discriminative stratified pruning.
-
-    Extends LiveCodeBenchAdapter by overriding sample_filter() to include
-    only the highest-signal samples selected by the pruner.
-    """
+    """LiveCodeBench v5 with universal discriminative stratified pruning."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
         review_dir = self.extra_params.get('review_dir')
-        prune_ratio = float(self.extra_params.get('prune_ratio', 0.3))
-        output_path = self.extra_params.get('output_path')
-
         if review_dir:
             self.init_pruning(
                 review_dir=review_dir,
                 benchmark_prefix='live_code_bench_v5',
-                prune_ratio=prune_ratio,
-                output_path=output_path,
-            )
-        else:
-            logger.warning(
-                'live_code_bench_pruned: no review_dir provided — running without pruning.'
+                prune_ratio=float(self.extra_params.get('prune_ratio', 0.3)),
+                output_path=self.extra_params.get('output_path'),
             )
